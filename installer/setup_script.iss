@@ -18,7 +18,7 @@ OutputBaseFilename=SeevoTeacherHelper_Setup
 Compression=lzma
 SolidCompression=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 
 [Languages]
 Name: "english"; MessagesFile: "D:\Second installation\InnoSetup\Default.isl"
