@@ -32,28 +32,7 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Code]
-#emit 'procedure EmptyFolderCheck;'
-#emit 'var'
-#emit '  AppDir: string;'
-#emit 'begin'
-#emit '  AppDir := ExpandConstant(''\{app\}'');'
-#emit '  if DirExists(AppDir) then begin'
-#emit '    if MsgBox(''The selected folder is not empty.'' + #13#10 +'
-#emit '      ''It is recommended to choose an empty folder.'' + #13#10 +'
-#emit '      #13#10 + ''Install to this folder anyway?'','
-#emit '      mbConfirmation, MB_YESNO) = IDNO then begin'
-#emit '      Abort;'
-#emit '    end;'
-#emit '  end;'
-#emit 'end;'
-#emit ''
-#emit 'function NextButtonClick(CurPageID: Integer): Boolean;'
-#emit 'begin'
-#emit '  Result := True;'
-#emit '  if CurPageID = wpSelectDir then begin'
-#emit '    EmptyFolderCheck;'
-#emit '  end;'
-#emit 'end;'
+#include "check_empty_folder.iss"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "运行 Seevo Teacher Helper"; Flags: postinstall nowait skipifsilent
