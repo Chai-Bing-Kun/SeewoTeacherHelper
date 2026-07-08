@@ -1,6 +1,6 @@
 """
 测试用程序：创建一个置顶窗口，运行期间始终保持在最顶层
-用于测试 Seevo Teacher Helper 的外置程序检测和重启功能
+用于测试 Seewo Teacher Helper 的外置程序检测和重启功能
 """
 import sys
 import tkinter as tk

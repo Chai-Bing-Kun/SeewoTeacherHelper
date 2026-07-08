@@ -1,20 +1,20 @@
-; Seevo Teacher Helper 安装脚本
+; Seewo Teacher Helper 安装脚本
 ; 使用 Inno Setup 编译：ISCC.exe setup_script.iss
 
-#define MyAppName "Seevo Teacher Helper"
+#define MyAppName "Seewo Teacher Helper"
 #define MyAppVersion "2.1"
-#define MyAppPublisher "SeevoHelper"
-#define MyAppExeName "SeevoTeacherHelper.exe"
+#define MyAppPublisher "SeewoHelper"
+#define MyAppExeName "SeewoTeacherHelper.exe"
 
 [Setup]
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\SeevoTeacherHelper
+DefaultDirName={autopf}\SeewoTeacherHelper
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=.
-OutputBaseFilename=SeevoTeacherHelper_Setup
+OutputBaseFilename=SeewoTeacherHelper_Setup
 Compression=lzma
 SolidCompression=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -35,4 +35,4 @@ Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 #include "check_empty_folder.iss"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "运行 Seevo Teacher Helper"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "运行 Seewo Teacher Helper"; Flags: postinstall nowait skipifsilent

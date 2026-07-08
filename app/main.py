@@ -26,7 +26,7 @@ def get_startup_shortcut_path():
     """获取开机自启动快捷方式路径"""
     startup_folder = os.path.join(os.environ.get("APPDATA", ""),
                                   r"Microsoft\Windows\Start Menu\Programs\Startup")
-    return os.path.join(startup_folder, "SeevoTeacherHelper.lnk")
+    return os.path.join(startup_folder, "SeewoTeacherHelper.lnk")
 
 
 def set_auto_startup(enable: bool):
@@ -52,7 +52,7 @@ def set_auto_startup(enable: bool):
                 f'$s.TargetPath = "{target}"\n'
                 f'$s.Arguments = "{args}"\n'
                 f'$s.WorkingDirectory = "{working_dir}"\n'
-                f'$s.Description = "Seevo Teacher Helper"\n'
+                f'$s.Description = "Seewo Teacher Helper"\n'
                 f'$s.Save()\n'
             )
             subprocess.run(

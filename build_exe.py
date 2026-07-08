@@ -1,5 +1,5 @@
 """
-打包脚本：将 Seevo Teacher Helper 打包为单个 exe 文件
+打包脚本：将 Seewo Teacher Helper 打包为单个 exe 文件
 使用方法：python build_exe.py
 """
 import os
@@ -27,7 +27,7 @@ def build():
         "pyinstaller",
         "--onefile",                # 打包为单个 exe
         "--windowed",               # 无控制台窗口（GUI模式）
-        "--name", "SeevoTeacherHelper",
+        "--name", "SeewoTeacherHelper",
         "--distpath", output_dir,
         "--workpath", os.path.join(script_dir, "build"),
         "--specpath", script_dir,
@@ -39,7 +39,7 @@ def build():
     ]
 
     print("=" * 60)
-    print("  开始打包 Seevo Teacher Helper...")
+    print("  开始打包 Seewo Teacher Helper...")
     print("=" * 60)
     print(f"  输出目录: {output_dir}")
     print("=" * 60)

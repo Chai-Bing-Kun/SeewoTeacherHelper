@@ -1,4 +1,4 @@
-# Seevo Teacher Helper - 触屏教学助手
+# Seewo Teacher Helper - 触屏教学助手
 
 专为 Windows 触屏教学场景设计的辅助工具，帮助教师快速打开 U 盘中的 PPT 课件，并自动检测外置设备驱动程序的运行状态。
 
@@ -40,12 +40,12 @@
 ## 📦 安装使用
 
 ### 方法一：用安装包安装（推荐）
-1. 从 Releases 页面下载 `SeevoTeacherHelper_Setup.exe`
+1. 从 Releases 页面下载 `SeewoTeacherHelper_Setup.exe`
 2. 双击运行，按提示选择安装位置（默认 Program Files）
 3. 安装完成后程序会自动启动，桌面也会生成快捷方式
 
 ### 方法二：直接运行 exe
-1. 从 Releases 页面获取 `SeevoTeacherHelper.exe`
+1. 从 Releases 页面获取 `SeewoTeacherHelper.exe`
 2. 双击运行即可（适合临时使用，不用安装）
 
 ### 方法三：源码运行（适合开发者）
@@ -103,7 +103,7 @@ ISCC.exe installer/setup_script.iss
 下面是这个项目里每个文件夹和文件是干什么用的，方便大家理解和修改：
 
 ```
-SeevoTeacherHelper/          ← 项目根目录（整个项目的家）
+SeewoTeacherHelper/          ← 项目根目录（整个项目的家）
 │
 ├── app/                     ← 📂 程序源代码（核心代码都在这）
 │   ├── main.py              ← 📄 主程序（程序的"大脑"，界面、搜索、检测、日志等功能都在这里）
@@ -111,7 +111,7 @@ SeevoTeacherHelper/          ← 项目根目录（整个项目的家）
 │
 ├── installer/               ← 📂 安装程序制作（用来生成安装包）
 │   ├── setup_script.iss     ← 📄 安装脚本（告诉安装工具怎么打包成安装程序）
-│   └── SeevoTeacherHelper_Setup.exe  ← 📦 安装包（双击它就能把程序装到电脑上）
+│   └── SeewoTeacherHelper_Setup.exe  ← 📦 安装包（双击它就能把程序装到电脑上）
 │
 ├── tests/                   ← 📂 测试文件（用来测试程序好不好用）
 │   ├── test_app.py          ← 📄 测试用模拟程序（假装是一个外置程序，用来测试检测功能）
@@ -124,7 +124,7 @@ SeevoTeacherHelper/          ← 项目根目录（整个项目的家）
 │       └── 测试程序2.exe
 │
 ├── dist/                    ← 📂 打包好的程序（编译后的成品）
-│   └── SeevoTeacherHelper.exe  ← 📦 单文件程序（下载这个就能直接运行，不用安装Python）
+│   └── SeewoTeacherHelper.exe  ← 📦 单文件程序（下载这个就能直接运行，不用安装Python）
 │
 ├── build/                   ← 📂 打包中间文件（打包时自动生成的临时文件，不用管它）
 │
@@ -133,7 +133,7 @@ SeevoTeacherHelper/          ← 项目根目录（整个项目的家）
 ├── .gitignore               ← 📄 Git忽略规则（告诉Git哪些文件不需要上传到GitHub）
 ├── build_exe.py             ← 📄 打包脚本（运行它就能把源代码打包成exe文件）
 ├── requirements.txt         ← 📄 依赖清单（记录了这个项目用到了哪些Python库）
-├── SeevoTeacherHelper.spec  ← 📄 打包配置文件（PyInstaller打包时用的配置文件）
+├── SeewoTeacherHelper.spec  ← 📄 打包配置文件（PyInstaller打包时用的配置文件）
 └── README.md                ← 📄 本文件（项目介绍和使用说明）
 ```
 
@@ -141,7 +141,7 @@ SeevoTeacherHelper/          ← 项目根目录（整个项目的家）
 
 | 如果你想... | 请关注这个文件/文件夹 |
 |------------|---------------------|
-| **直接使用程序** | `dist/SeevoTeacherHelper.exe` 或 `installer/SeevoTeacherHelper_Setup.exe` |
+| **直接使用程序** | `dist/SeewoTeacherHelper.exe` 或 `installer/SeewoTeacherHelper_Setup.exe` |
 | **修改程序代码** | `app/main.py`（主要功能）和 `app/error_helper.py`（错误提示） |
 | **重新打包成exe** | 运行 `build_exe.py` |
 | **制作安装包** | `installer/setup_script.iss` |
