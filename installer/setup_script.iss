@@ -2,7 +2,7 @@
 ; 使用 Inno Setup 编译：ISCC.exe setup_script.iss
 
 #define MyAppName "Seevo Teacher Helper"
-#define MyAppVersion "1.0"
+#define MyAppVersion "2.1"
 #define MyAppPublisher "SeevoHelper"
 #define MyAppExeName "SeevoTeacherHelper.exe"
 
@@ -10,7 +10,7 @@
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName=D:\Second installation\SeevoTeacherHelper
+DefaultDirName={autopf}\SeevoTeacherHelper
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=.

@@ -13,9 +13,185 @@ from PyQt5.QtWidgets import (
     QTabWidget
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush
+from PyQt5.QtWidgets import QStyle
 
 from error_helper import show_error, show_warning, show_info
+
+
+# ============================================================
+# 开机自启动管理
+# ============================================================
+def get_startup_shortcut_path():
+    """获取开机自启动快捷方式路径"""
+    startup_folder = os.path.join(os.environ.get("APPDATA", ""),
+                                  r"Microsoft\Windows\Start Menu\Programs\Startup")
+    return os.path.join(startup_folder, "SeevoTeacherHelper.lnk")
+
+
+def set_auto_startup(enable: bool):
+    """设置或取消开机自启动"""
+    shortcut_path = get_startup_shortcut_path()
+    if enable:
+        try:
+            if getattr(sys, 'frozen', False):
+                # 打包为 exe 时，直接使用 exe 路径
+                target = sys.executable
+                working_dir = os.path.dirname(sys.executable)
+                args = ""
+            else:
+                # 源码运行时，使用 python.exe + main.py 路径
+                target = sys.executable
+                script_path = os.path.abspath(__file__)
+                working_dir = os.path.dirname(script_path)
+                args = script_path
+            # 使用 PowerShell 创建快捷方式（通过标准输入传递命令，避免引号转义问题）
+            ps_script = (
+                f'$ws = New-Object -ComObject WScript.Shell\n'
+                f'$s = $ws.CreateShortcut("{shortcut_path}")\n'
+                f'$s.TargetPath = "{target}"\n'
+                f'$s.Arguments = "{args}"\n'
+                f'$s.WorkingDirectory = "{working_dir}"\n'
+                f'$s.Description = "Seevo Teacher Helper"\n'
+                f'$s.Save()\n'
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "-"],
+                input=ps_script, capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return True, "已设置开机自启动"
+        except Exception as e:
+            return False, str(e)
+    else:
+        try:
+            if os.path.exists(shortcut_path):
+                os.remove(shortcut_path)
+            return True, "已取消开机自启动"
+        except Exception as e:
+            return False, str(e)
+
+
+def is_auto_startup_enabled() -> bool:
+    """检查是否已设置开机自启动"""
+    return os.path.exists(get_startup_shortcut_path())
+
+
+# ============================================================
+# PPT 进程监控线程
+# ============================================================
+class PptMonitorThread(QThread):
+    """监控 PowerPoint/WPS 进程数量变化"""
+    ppt_opened = pyqtSignal()   # 检测到新的PPT打开时触发
+    ppt_closed = pyqtSignal()   # PPT全部关闭时触发
+
+    def __init__(self):
+        super().__init__()
+        self._stopped = False
+        self._last_count = 0
+
+    def stop(self):
+        self._stopped = True
+
+    def _count_ppt_processes(self, stdout_lower):
+        """统计 PPT 相关进程的数量"""
+        ppt_processes = ['powerpnt.exe', 'wpp.exe', 'et.exe', 'wps.exe']
+        total = 0
+        for proc in ppt_processes:
+            # CSV 中每行一个进程: "powerpnt.exe","1234","Console","1","xxx"
+            # 统计该进程名出现的行数
+            proc_quoted = f'"{proc}"'
+            count = stdout_lower.count(proc_quoted)
+            if count > 0:
+                total += count
+            else:
+                # 兜底：直接统计包含进程名的行
+                for line in stdout_lower.splitlines():
+                    if proc in line:
+                        total += 1
+        return total
+
+    def run(self):
+        while not self._stopped:
+            try:
+                result = subprocess.run(
+                    ["tasklist", "/NH", "/FO", "CSV"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                stdout_lower = result.stdout.lower()
+
+                current_count = self._count_ppt_processes(stdout_lower)
+
+                if current_count > self._last_count:
+                    # PPT 进程数量增加了 → 有新的 PPT 被打开
+                    self._last_count = current_count
+                    # 延迟一小段时间再触发，确保 PPT 进程已完全就绪
+                    self.msleep(800)
+                    self.ppt_opened.emit()
+                elif current_count < self._last_count:
+                    self._last_count = current_count
+                    if current_count == 0:
+                        self.ppt_closed.emit()
+            except Exception:
+                pass
+            self.msleep(2000)  # 每2秒检测一次
+
+
+# ============================================================
+# PPT 检测到后的外置程序检测/重启线程
+# ============================================================
+class PptCheckThread(QThread):
+    """在 PPT 打开后，在工作线程中执行外置程序检测和重启"""
+    log = pyqtSignal(str)  # 日志消息
+
+    def __init__(self, apps, monitor_ppt_enabled=True, check_before_ppt_enabled=True):
+        super().__init__()
+        self.apps = apps
+        # 以设置中的总开关为准，覆盖单个程序的设置
+        self.monitor_ppt_enabled = monitor_ppt_enabled
+        self.check_before_ppt_enabled = check_before_ppt_enabled
+
+    def run(self):
+        # 先等待一下，确保 PPT 进程完全就绪
+        self.msleep(500)
+
+        for app in self.apps:
+            # 先检查设置中的总开关
+            # 如果 monitor_ppt 关闭，则所有检测/重启都不执行
+            if not self.monitor_ppt_enabled:
+                continue
+            # 如果 check_before_ppt 关闭，则不执行自动检测启动
+            if not self.check_before_ppt_enabled and not app.restart_on_ppt:
+                continue
+
+            # 单个程序的 auto_check 仍然生效（在总开关开启的前提下）
+            if not app.auto_check:
+                continue
+
+            try:
+                if app.restart_on_ppt:
+                    # 标记了"打开PPT时重启"的程序：每次都执行重启
+                    self.log.emit(f"  [监控] 正在重启：{app.name}")
+                    ok, msg = app.restart()
+                    if ok:
+                        self.log.emit(f"  [监控] 已重启：{app.name}")
+                    else:
+                        self.log.emit(f"  [监控] 重启失败：{app.name} - {msg}")
+                else:
+                    # 未标记重启的程序：检测是否在运行，不在则启动
+                    running = app.is_running()
+                    if not running:
+                        self.log.emit(f"  [监控] {app.name} 未运行，正在启动...")
+                        ok, msg = app.launch()
+                        if ok:
+                            self.log.emit(f"  [监控] 已启动：{app.name}")
+                        else:
+                            self.log.emit(f"  [监控] 启动失败：{app.name} - {msg}")
+                    else:
+                        self.log.emit(f"  [监控] {app.name} 运行正常")
+            except Exception as e:
+                self.log.emit(f"  [监控] {app.name} 检测出错：{str(e)}")
 
 
 # ============================================================
@@ -33,8 +209,10 @@ def get_config_path():
 CONFIG_FILE = get_config_path()
 
 DEFAULT_CONFIG = {
-    "check_on_startup": True,
     "check_before_ppt": True,
+    "auto_startup": False,          # 开机自启动
+    "start_mode": "tray",           # 启动模式: "tray"=折叠框, "window"=图形界面
+    "monitor_ppt": True,            # 检测PPT程序运行（自动触发外置程序检测和重启）
     "window_width": 800,
     "window_height": 600,
     "external_apps": []
@@ -141,7 +319,7 @@ class ExternalApp:
     def restart(self):
         """重启程序：先杀进程，再启动"""
         self.kill()
-        time.sleep(0.5)
+        time.sleep(1.5)
         return self.launch()
 
     def launch(self):
@@ -303,9 +481,12 @@ class PptSearchThread(QThread):
 # 编辑外置应用对话框
 # ============================================================
 class AppEditDialog(QDialog):
-    def __init__(self, app=None, parent=None):
+    def __init__(self, app=None, parent=None,
+                 monitor_ppt_enabled=True, check_before_ppt_enabled=True):
         super().__init__(parent)
         self.app = app
+        self.monitor_ppt_enabled = monitor_ppt_enabled
+        self.check_before_ppt_enabled = check_before_ppt_enabled
         self.setWindowTitle("编辑外置应用" if app else "添加外置应用")
         self.setMinimumWidth(450)
         self.setup_ui()
@@ -342,10 +523,16 @@ class AppEditDialog(QDialog):
 
         self.auto_check_cb = QCheckBox("自动检测运行状态")
         self.auto_check_cb.setChecked(True)
+        if not self.check_before_ppt_enabled:
+            self.auto_check_cb.setEnabled(False)
+            self.auto_check_cb.setToolTip("设置中的「打开PPT前自动检测」总开关已关闭，该功能暂不可用")
         layout.addRow(self.auto_check_cb)
 
         self.restart_cb = QCheckBox("打开PPT时自动重启（先杀进程再重新打开）")
         self.restart_cb.setChecked(False)
+        if not self.monitor_ppt_enabled:
+            self.restart_cb.setEnabled(False)
+            self.restart_cb.setToolTip("设置中的「检测到PPT时自动执行」总开关已关闭，该功能暂不可用")
         layout.addRow(self.restart_cb)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -413,9 +600,18 @@ class MainWindow(QMainWindow):
         self.setup_tray()
         self.apply_style()
 
-        # 延迟启动检测
-        if self.config.get("check_on_startup", True) and self.external_apps:
-            QTimer.singleShot(1500, self.check_external_apps)
+        # 注意：外置程序的检测和重置仅在检测到PPT打开时触发
+        # 不再在启动时检测，避免程序被无故启动
+
+        # 处理启动模式
+        start_mode = self.config.get("start_mode", "tray")
+        if start_mode == "tray":
+            # 默认缩小到折叠框（系统托盘）
+            QTimer.singleShot(100, self.hide_to_tray)
+
+        # 启动PPT进程监控
+        if self.config.get("monitor_ppt", True):
+            self.start_ppt_monitor()
 
     # ==================== UI 构建 ====================
     def setup_ui(self):
@@ -454,6 +650,10 @@ class MainWindow(QMainWindow):
         self.settings_tab = QWidget()
         self.setup_settings_tab()
         self.tabs.addTab(self.settings_tab, "设置")
+
+        self.log_tab = QWidget()
+        self.setup_log_tab()
+        self.tabs.addTab(self.log_tab, "日志")
 
     # ==================== PPT 选项卡 ====================
     def setup_ppt_tab(self):
@@ -669,20 +869,10 @@ class MainWindow(QMainWindow):
                 "请检查文件是否被移动或删除，然后重新搜索。")
             return
 
-        # 打开PPT前，先重启标记了「打开PPT时重启」的外置程序
-        restart_apps = [app for app in self.external_apps if app.restart_on_ppt]
-        if restart_apps:
-            self.ppt_status_label.setText(f"正在重启 {len(restart_apps)} 个外置程序...")
-            for app in restart_apps:
-                ok, msg = app.restart()
-                if ok:
-                    self.check_result_text.append(f"  已重启：{app.name}")
-                else:
-                    self.check_result_text.append(f"  重启失败：{app.name} - {msg}")
-
         try:
             os.startfile(path)
             self.ppt_status_label.setText(f"正在打开：{os.path.basename(path)}")
+            # 外置程序的检测和重启由 PPT 监控线程统一处理（on_ppt_detected）
         except Exception as e:
             show_error(self, e, f"打开文件：{path}")
 
@@ -718,20 +908,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(check_btn)
         layout.addLayout(btn_layout)
 
-        self.check_result_text = QTextEdit()
-        self.check_result_text.setReadOnly(True)
-        self.check_result_text.setMaximumHeight(120)
-        self.check_result_text.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 8px;
-                background-color: #fafafa;
-                font-size: 12px;
-            }
-        """)
-        layout.addWidget(QLabel("检测结果："))
-        layout.addWidget(self.check_result_text)
+
 
         self.refresh_app_list()
 
@@ -755,7 +932,11 @@ class MainWindow(QMainWindow):
             self.app_list_widget.addItem(item)
 
     def add_external_app(self):
-        dialog = AppEditDialog(parent=self)
+        dialog = AppEditDialog(
+            parent=self,
+            monitor_ppt_enabled=self.config.get("monitor_ppt", True),
+            check_before_ppt_enabled=self.config.get("check_before_ppt", True)
+        )
         if dialog.exec_() == QDialog.Accepted:
             app = dialog.get_app()
             self.external_apps.append(app)
@@ -767,7 +948,11 @@ class MainWindow(QMainWindow):
         if current < 0 or current >= len(self.external_apps):
             show_info(self, "提示", "请先选择一个程序")
             return
-        dialog = AppEditDialog(app=self.external_apps[current], parent=self)
+        dialog = AppEditDialog(
+            app=self.external_apps[current], parent=self,
+            monitor_ppt_enabled=self.config.get("monitor_ppt", True),
+            check_before_ppt_enabled=self.config.get("check_before_ppt", True)
+        )
         if dialog.exec_() == QDialog.Accepted:
             self.external_apps[current] = dialog.get_app()
             self.save_external_apps()
@@ -790,12 +975,12 @@ class MainWindow(QMainWindow):
 
     def check_external_apps(self):
         """检测所有外置程序的运行状态"""
-        self.check_result_text.clear()
-        self.check_result_text.append("正在检测外置程序运行状态...\n")
+        self.log_text.clear()
+        self.log_text.append("正在检测外置程序运行状态...\n")
 
         apps_to_check = [app for app in self.external_apps if app.auto_check]
         if not apps_to_check:
-            self.check_result_text.append("没有需要检测的外置程序")
+            self.log_text.append("没有需要检测的外置程序")
             return
 
         self.check_thread = CheckThread(apps_to_check)
@@ -803,17 +988,20 @@ class MainWindow(QMainWindow):
         self.check_thread.start()
 
     def on_check_finished(self, results):
-        self.check_result_text.clear()
+        self.log_text.clear()
         not_running = []
         for name, exe_path, running in results:
             if running:
-                self.check_result_text.append(f"[正常]  {name}")
+                self.log_text.append(f"[正常]  {name}")
             else:
-                self.check_result_text.append(f"[未运行]  {name}")
+                self.log_text.append(f"[未运行]  {name}")
                 not_running.append((name, exe_path))
 
         if not_running:
-            self.check_result_text.append(f"\n有 {len(not_running)} 个程序未运行")
+            self.log_text.append(f"\n有 {len(not_running)} 个程序未运行")
+            # 如果窗口隐藏，先显示窗口再弹窗
+            if not self.isVisible():
+                self.show_and_raise()
             reply = QMessageBox.question(
                 self, "检测完成",
                 f"有 {len(not_running)} 个程序未运行，是否启动它们？",
@@ -822,8 +1010,7 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.launch_apps(not_running)
         else:
-            self.check_result_text.append("\n所有程序运行正常！")
-            show_info(self, "检测完成", "所有外置程序运行正常！")
+            self.log_text.append("\n所有程序运行正常！")
 
     def launch_apps(self, apps):
         success_count = 0
@@ -832,39 +1019,67 @@ class MainWindow(QMainWindow):
             ok, msg = app.launch()
             if ok:
                 success_count += 1
-                self.check_result_text.append(f"  已启动：{name}")
+                self.log_text.append(f"  已启动：{name}")
             else:
-                self.check_result_text.append(f"  启动失败：{name} - {msg}")
+                self.log_text.append(f"  启动失败：{name} - {msg}")
 
         if success_count:
-            show_info(self, "启动完成", f"成功启动 {success_count} 个程序")
+            # 窗口隐藏时不弹窗，日志已写入日志选项卡
+            if self.isVisible():
+                show_info(self, "启动完成", f"成功启动 {success_count} 个程序")
 
     # ==================== 设置选项卡 ====================
     def setup_settings_tab(self):
         layout = QVBoxLayout(self.settings_tab)
         layout.setSpacing(15)
 
+        # ----- 启动设置 -----
+        group_startup = QGroupBox("启动设置")
+        group_startup_layout = QVBoxLayout(group_startup)
+
+        self.auto_startup_cb = QCheckBox("开机自动启动")
+        self.auto_startup_cb.setChecked(self.config.get("auto_startup", False))
+        self.auto_startup_cb.toggled.connect(self.on_auto_startup_toggled)
+        group_startup_layout.addWidget(self.auto_startup_cb)
+
+        self.start_mode_tray_cb = QCheckBox("启动时缩小到系统托盘（折叠框）")
+        self.start_mode_tray_cb.setChecked(self.config.get("start_mode", "tray") == "tray")
+        self.start_mode_tray_cb.toggled.connect(self.on_start_mode_toggled)
+        group_startup_layout.addWidget(self.start_mode_tray_cb)
+
+        layout.addWidget(group_startup)
+
+        # ----- 检测设置 -----
         group1 = QGroupBox("检测设置")
         group1_layout = QVBoxLayout(group1)
 
-        self.check_startup_cb = QCheckBox("程序启动时自动检测外置程序运行状态")
-        self.check_startup_cb.setChecked(self.config.get("check_on_startup", True))
-        self.check_startup_cb.toggled.connect(
-            lambda v: self.update_config("check_on_startup", v))
-        group1_layout.addWidget(self.check_startup_cb)
+        self.monitor_ppt_cb = QCheckBox("【总开关】检测到PPT时自动执行外置程序检测和重启")
+        self.monitor_ppt_cb.setChecked(self.config.get("monitor_ppt", True))
+        self.monitor_ppt_cb.toggled.connect(self.on_monitor_ppt_toggled)
+        group1_layout.addWidget(self.monitor_ppt_cb)
 
-        self.check_before_ppt_cb = QCheckBox("打开PPT前自动检测外置程序运行状态")
+        self.check_before_ppt_cb = QCheckBox("【总开关】打开PPT前自动检测外置程序运行状态")
         self.check_before_ppt_cb.setChecked(self.config.get("check_before_ppt", True))
         self.check_before_ppt_cb.toggled.connect(
             lambda v: self.update_config("check_before_ppt", v))
         group1_layout.addWidget(self.check_before_ppt_cb)
 
+        monitor_hint = QLabel(
+            "💡 总开关关闭时，即使单个程序勾选了对应功能也不会生效。\n"
+            "   「检测到PPT时」：监控PPT进程，自动触发外置程序检测和重启\n"
+            "   「打开PPT前」：通过本程序打开PPT前检测外置程序运行状态"
+        )
+        monitor_hint.setStyleSheet("color: #888; font-size: 11px; padding-left: 20px;")
+        monitor_hint.setWordWrap(True)
+        group1_layout.addWidget(monitor_hint)
+
         layout.addWidget(group1)
 
+        # ----- 关于 -----
         group3 = QGroupBox("关于")
         group3_layout = QVBoxLayout(group3)
         about_text = QLabel(
-            "Seewo Teacher Helper v1.0\n\n"
+            "Seewo Teacher Helper v2.1\n\n"
             "专为触屏教学场景设计，帮助教师快速打开PPT课件，\n"
             "并自动检测外置设备驱动程序的运行状态。\n\n"
             "支持自定义添加外置程序，灵活适配不同教学环境。"
@@ -876,6 +1091,79 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+    # ==================== 日志选项卡 ====================
+    def setup_log_tab(self):
+        layout = QVBoxLayout(self.log_tab)
+        layout.setSpacing(10)
+
+        header = QLabel("运行日志")
+        header_font = QFont()
+        header_font.setPointSize(12)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        hint = QLabel(
+            "记录 PPT 进程监控、外置程序检测与重启等所有运行信息，便于调试和排查问题。"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                padding: 8px;
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 12px;
+            }
+        """)
+        layout.addWidget(self.log_text)
+
+        btn_layout = QHBoxLayout()
+        clear_btn = QPushButton("清空日志")
+        clear_btn.clicked.connect(self.log_text.clear)
+        btn_layout.addStretch()
+        btn_layout.addWidget(clear_btn)
+        layout.addLayout(btn_layout)
+
+    def on_auto_startup_toggled(self, enabled):
+        """开机自启动开关"""
+        ok, msg = set_auto_startup(enabled)
+        if ok:
+            self.config["auto_startup"] = enabled
+            save_config(self.config)
+        else:
+            show_warning(self, "设置失败",
+                f"无法{'启用' if enabled else '关闭'}开机自启动：{msg}",
+                "请尝试以管理员身份运行本程序。")
+            # 恢复复选框状态
+            self.auto_startup_cb.blockSignals(True)
+            self.auto_startup_cb.setChecked(not enabled)
+            self.auto_startup_cb.blockSignals(False)
+
+    def on_start_mode_toggled(self, tray_mode):
+        """启动模式切换：窗口/折叠框"""
+        mode = "tray" if tray_mode else "window"
+        self.config["start_mode"] = mode
+        save_config(self.config)
+
+    def on_monitor_ppt_toggled(self, enabled):
+        """PPT监控开关"""
+        self.config["monitor_ppt"] = enabled
+        save_config(self.config)
+        if enabled:
+            self.start_ppt_monitor()
+        else:
+            if hasattr(self, 'ppt_monitor'):
+                self.ppt_monitor.stop()
+                self.ppt_monitor.wait(2000)
+
     def update_config(self, key, value):
         self.config[key] = value
         save_config(self.config)
@@ -885,6 +1173,23 @@ class MainWindow(QMainWindow):
         try:
             self.tray_icon = QSystemTrayIcon(self)
             self.tray_icon.setToolTip("Seewo Teacher Helper")
+
+            # 创建托盘图标：使用 QStyle 标准图标或绘制一个简单图标
+            icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
+            if icon.isNull():
+                # 如果标准图标不可用，手动绘制一个简单图标
+                pixmap = QPixmap(32, 32)
+                pixmap.fill(Qt.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setBrush(QBrush(QColor("#4a90d9")))
+                painter.setPen(QPen(QColor("#2c5f8a"), 1))
+                painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
+                painter.setPen(QPen(QColor("white"), 2))
+                painter.drawText(pixmap.rect(), Qt.AlignCenter, "S")
+                painter.end()
+                icon = QIcon(pixmap)
+            self.tray_icon.setIcon(icon)
 
             tray_menu = QMenu()
             show_action = QAction("显示主窗口", self)
@@ -920,8 +1225,57 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.DoubleClick:
             self.show_and_raise()
 
+    def hide_to_tray(self):
+        """隐藏窗口到系统托盘（折叠框）"""
+        self.hide()
+        if self.tray_icon:
+            try:
+                self.tray_icon.showMessage(
+                    "Seewo Teacher Helper",
+                    "程序已最小化到系统托盘",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
+            except Exception:
+                pass
+
+    def start_ppt_monitor(self):
+        """启动PPT进程监控"""
+        self.ppt_monitor = PptMonitorThread()
+        self.ppt_monitor.ppt_opened.connect(self.on_ppt_detected)
+        self.ppt_monitor.ppt_closed.connect(self.on_ppt_closed)
+        self.ppt_monitor.start()
+
+    def on_ppt_detected(self):
+        """检测到PPT程序正在运行 → 执行外置程序检测和重启"""
+        self.log_text.append("\n[监控] 检测到PPT程序正在运行...")
+
+        # 以设置中的总开关为准，传递给工作线程
+        monitor_ppt = self.config.get("monitor_ppt", True)
+        check_before_ppt = self.config.get("check_before_ppt", True)
+
+        # 在工作线程中执行检测和重启，避免阻塞主线程
+        self._ppt_check_thread = PptCheckThread(
+            self.external_apps,
+            monitor_ppt_enabled=monitor_ppt,
+            check_before_ppt_enabled=check_before_ppt
+        )
+        self._ppt_check_thread.log.connect(self._on_ppt_check_log)
+        self._ppt_check_thread.start()
+
+    def _on_ppt_check_log(self, message):
+        """接收 PPT 检测线程的日志消息，更新 UI"""
+        self.log_text.append(message)
+
+    def on_ppt_closed(self):
+        """PPT程序关闭时的处理（预留）"""
+        pass
+
     def quit_app(self):
         self._closing = True
+        if hasattr(self, 'ppt_monitor'):
+            self.ppt_monitor.stop()
+            self.ppt_monitor.wait(2000)
         if self.tray_icon:
             self.tray_icon.hide()
         QApplication.quit()
