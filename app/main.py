@@ -20,6 +20,19 @@ from error_helper import show_error, show_warning, show_info
 
 
 # ============================================================
+# 资源路径管理
+# ============================================================
+def get_asset_path(filename):
+    """获取资源文件路径（兼容 exe 打包场景）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后，资源文件解压在 sys._MEIPASS 临时目录
+        base = Path(sys._MEIPASS) / "app" / "assets"
+    else:
+        base = Path(__file__).parent / "assets"
+    return str(base / filename)
+
+
+# ============================================================
 # 开机自启动管理
 # ============================================================
 def get_startup_shortcut_path():
@@ -374,6 +387,169 @@ class CheckThread(QThread):
 
 
 # ============================================================
+# 系统检测线程
+# ============================================================
+class SystemCheckThread(QThread):
+    """检测电脑系统运行状态"""
+    finished = pyqtSignal(dict)  # 返回检测结果字典
+
+    def __init__(self):
+        super().__init__()
+
+    def run(self):
+        result = {}
+
+        # 1. CPU 使用率
+        try:
+            import psutil
+            cpu_percent = psutil.cpu_percent(interval=1)
+            result["cpu"] = cpu_percent
+        except ImportError:
+            # 没有 psutil 时使用 wmic 兜底
+            try:
+                output = subprocess.run(
+                    ["wmic", "cpu", "get", "loadpercentage"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                lines = output.stdout.strip().splitlines()
+                for line in lines:
+                    if line.strip().isdigit():
+                        result["cpu"] = int(line.strip())
+                        break
+            except Exception:
+                result["cpu"] = None
+
+        # 2. 内存使用率
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            result["memory_percent"] = mem.percent
+            result["memory_used"] = mem.used
+            result["memory_total"] = mem.total
+        except ImportError:
+            try:
+                output = subprocess.run(
+                    ["wmic", "OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/VALUE"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                total = None
+                free = None
+                for line in output.stdout.splitlines():
+                    if "TotalVisibleMemorySize" in line:
+                        total = int(line.split("=")[1].strip())
+                    elif "FreePhysicalMemory" in line:
+                        free = int(line.split("=")[1].strip())
+                if total and free is not None:
+                    result["memory_percent"] = round((1 - free / total) * 100, 1)
+                    result["memory_used"] = (total - free) * 1024
+                    result["memory_total"] = total * 1024
+            except Exception:
+                result["memory_percent"] = None
+
+        # 3. 磁盘使用率（C 盘）
+        try:
+            import psutil
+            disk = psutil.disk_usage("C:\\")
+            result["disk_percent"] = disk.percent
+            result["disk_free"] = disk.free
+            result["disk_total"] = disk.total
+        except ImportError:
+            try:
+                output = subprocess.run(
+                    ["wmic", "LogicalDisk", "where", "DeviceID='C:'",
+                     "get", "Size,FreeSpace", "/VALUE"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                total = None
+                free = None
+                for line in output.stdout.splitlines():
+                    if "Size" in line and "=" in line:
+                        total = int(line.split("=")[1].strip())
+                    elif "FreeSpace" in line and "=" in line:
+                        free = int(line.split("=")[1].strip())
+                if total and free is not None:
+                    result["disk_percent"] = round((1 - free / total) * 100, 1)
+                    result["disk_free"] = free
+                    result["disk_total"] = total
+            except Exception:
+                result["disk_percent"] = None
+
+        # 4. 系统运行时间
+        try:
+            import psutil
+            boot_time = psutil.boot_time()
+            uptime_seconds = time.time() - boot_time
+            days = int(uptime_seconds // 86400)
+            hours = int((uptime_seconds % 86400) // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            result["uptime"] = f"{days}天 {hours}小时 {minutes}分钟"
+        except ImportError:
+            try:
+                output = subprocess.run(
+                    ["wmic", "OS", "get", "LastBootUpTime", "/VALUE"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                for line in output.stdout.splitlines():
+                    if "LastBootUpTime" in line and "=" in line:
+                        boot_str = line.split("=")[1].strip()
+                        boot_time = time.mktime(time.strptime(boot_str[:14], "%Y%m%d%H%M%S"))
+                        uptime_seconds = time.time() - boot_time
+                        days = int(uptime_seconds // 86400)
+                        hours = int((uptime_seconds % 86400) // 3600)
+                        minutes = int((uptime_seconds % 3600) // 60)
+                        result["uptime"] = f"{days}天 {hours}小时 {minutes}分钟"
+                        break
+            except Exception:
+                result["uptime"] = "未知"
+
+        # 5. 系统版本
+        try:
+            output = subprocess.run(
+                ["wmic", "OS", "get", "Caption,Version", "/VALUE"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            caption = ""
+            version = ""
+            for line in output.stdout.splitlines():
+                if "Caption" in line and "=" in line:
+                    caption = line.split("=", 1)[1].strip()
+                elif "Version" in line and "=" in line:
+                    version = line.split("=", 1)[1].strip()
+            result["os_version"] = f"{caption} (版本 {version})" if caption else "Windows"
+        except Exception:
+            result["os_version"] = "Windows"
+
+        # 6. 重要进程检测（常见教学相关进程）
+        important_processes = {
+            "powerpnt.exe": "Microsoft PowerPoint",
+            "wpp.exe": "WPS 演示",
+            "wps.exe": "WPS Office",
+            "SeewoTeacherHelper.exe": "Seewo Teacher Helper",
+        }
+        try:
+            tasklist = subprocess.run(
+                ["tasklist", "/NH", "/FO", "CSV"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            stdout_lower = tasklist.stdout.lower()
+            running_procs = []
+            for exe_name, display_name in important_processes.items():
+                if f'"{exe_name}"' in stdout_lower or exe_name in stdout_lower:
+                    running_procs.append(display_name)
+            result["running_processes"] = running_procs
+        except Exception:
+            result["running_processes"] = []
+
+        self.finished.emit(result)
+
+
+# ============================================================
 # PPT 智能搜索线程（U盘优先 > 桌面 > 其他磁盘，实时推送）
 # ============================================================
 class PptSearchThread(QThread):
@@ -595,6 +771,11 @@ class MainWindow(QMainWindow):
             self.config.get("window_width", 800),
             self.config.get("window_height", 600)
         )
+
+        # 设置窗口图标
+        icon_path = get_asset_path("app_icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.setup_ui()
         self.setup_tray()
@@ -1174,21 +1355,25 @@ class MainWindow(QMainWindow):
             self.tray_icon = QSystemTrayIcon(self)
             self.tray_icon.setToolTip("Seewo Teacher Helper")
 
-            # 创建托盘图标：使用 QStyle 标准图标或绘制一个简单图标
-            icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
-            if icon.isNull():
-                # 如果标准图标不可用，手动绘制一个简单图标
-                pixmap = QPixmap(32, 32)
-                pixmap.fill(Qt.transparent)
-                painter = QPainter(pixmap)
-                painter.setRenderHint(QPainter.Antialiasing)
-                painter.setBrush(QBrush(QColor("#4a90d9")))
-                painter.setPen(QPen(QColor("#2c5f8a"), 1))
-                painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
-                painter.setPen(QPen(QColor("white"), 2))
-                painter.drawText(pixmap.rect(), Qt.AlignCenter, "S")
-                painter.end()
-                icon = QIcon(pixmap)
+            # 使用自定义图片作为托盘图标
+            icon_path = get_asset_path("app_icon.png")
+            if os.path.exists(icon_path):
+                icon = QIcon(icon_path)
+            else:
+                # 兜底：使用 QStyle 标准图标或绘制一个简单图标
+                icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
+                if icon.isNull():
+                    pixmap = QPixmap(32, 32)
+                    pixmap.fill(Qt.transparent)
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.setBrush(QBrush(QColor("#4a90d9")))
+                    painter.setPen(QPen(QColor("#2c5f8a"), 1))
+                    painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
+                    painter.setPen(QPen(QColor("white"), 2))
+                    painter.drawText(pixmap.rect(), Qt.AlignCenter, "S")
+                    painter.end()
+                    icon = QIcon(pixmap)
             self.tray_icon.setIcon(icon)
 
             tray_menu = QMenu()
@@ -1228,16 +1413,6 @@ class MainWindow(QMainWindow):
     def hide_to_tray(self):
         """隐藏窗口到系统托盘（折叠框）"""
         self.hide()
-        if self.tray_icon:
-            try:
-                self.tray_icon.showMessage(
-                    "Seewo Teacher Helper",
-                    "程序已最小化到系统托盘",
-                    QSystemTrayIcon.Information,
-                    2000
-                )
-            except Exception:
-                pass
 
     def start_ppt_monitor(self):
         """启动PPT进程监控"""
@@ -1295,17 +1470,6 @@ class MainWindow(QMainWindow):
 
         event.ignore()
         self.hide()
-
-        if self.tray_icon:
-            try:
-                self.tray_icon.showMessage(
-                    "Seewo Teacher Helper",
-                    "程序已最小化到系统托盘",
-                    QSystemTrayIcon.Information,
-                    2000
-                )
-            except Exception:
-                pass
 
     # ==================== 样式 ====================
     def apply_style(self):

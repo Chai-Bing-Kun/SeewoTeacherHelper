@@ -22,6 +22,9 @@ def build():
     # 输出目录
     output_dir = os.path.join(script_dir, "dist")
 
+    # 图标路径
+    icon_path = os.path.join(script_dir, "app", "assets", "app_icon.ico")
+
     # PyInstaller 命令
     cmd = [
         "pyinstaller",
@@ -31,12 +34,14 @@ def build():
         "--distpath", output_dir,
         "--workpath", os.path.join(script_dir, "build"),
         "--specpath", script_dir,
-        "--add-data", f"app{os.pathsep}app",  # 添加 app 目录
+        "--add-data", f"app{os.pathsep}app",  # 添加 app 目录（含 assets）
         "--hidden-import", "PyQt5.sip",
         "--clean",
         "--noconfirm",
-        main_script
     ]
+    if os.path.exists(icon_path):
+        cmd.extend(["--icon", icon_path])
+    cmd.append(main_script)
 
     print("=" * 60)
     print("  开始打包 Seewo Teacher Helper...")

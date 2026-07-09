@@ -19,6 +19,7 @@ Compression=lzma
 SolidCompression=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=admin
+SetupIconFile=..\app\assets\app_icon.ico
 
 [Languages]
 Name: "english"; MessagesFile: "D:\Second installation\InnoSetup\Default.isl"

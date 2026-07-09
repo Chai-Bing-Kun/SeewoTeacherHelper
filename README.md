@@ -1,5 +1,9 @@
 # Seewo Teacher Helper - 触屏教学助手
 
+<p align="center">
+  <img src="app/assets/app_icon.png" alt="Seewo Teacher Helper" width="128" height="128">
+</p>
+
 专为 Windows 触屏教学场景设计的辅助工具，帮助教师快速打开 U 盘中的 PPT 课件，并自动检测外置设备驱动程序的运行状态。
 
 ## ✨ 功能特点
@@ -24,18 +28,22 @@
 - 检测结果清晰展示，未运行的程序可一键启动
 
 ### 🖥 系统托盘
-- 关闭窗口时自动最小化到系统托盘
+- 关闭窗口时自动最小化到系统托盘，静默后台运行
 - 托盘菜单快速访问主要功能
 - 后台运行，不干扰教学
 
-### 🚀 启动设置（v2.0 新增）
+### 🚀 启动设置
 - **开机自启动**：设置程序随 Windows 开机自动启动
 - **启动模式**：可选择启动时显示窗口或直接缩小到系统托盘（折叠框）
 
-### 📋 日志面板（v2.1 新增）
+### 📋 日志面板
 - 独立的日志选项卡，实时输出 PPT 监控和程序检测的调试信息
 - 深色主题，等宽字体，便于阅读
 - 所有监控和检测操作一目了然
+
+### 🎨 自定义图标
+- 支持使用自定义图片作为程序窗口图标和系统托盘图标
+- 打包为 exe 时自动嵌入图标，安装包也带有专属图标
 
 ## 📦 安装使用
 
@@ -106,12 +114,17 @@ ISCC.exe installer/setup_script.iss
 SeewoTeacherHelper/          ← 项目根目录（整个项目的家）
 │
 ├── app/                     ← 📂 程序源代码（核心代码都在这）
+│   ├── assets/              ← 📂 资源文件（图标、图片等）
+│   │   ├── app_icon.png     ← 🖼 程序图标（窗口、托盘、README 展示用）
+│   │   └── app_icon.ico     ← 🖼 多尺寸图标（exe 文件图标、安装包图标用）
 │   ├── main.py              ← 📄 主程序（程序的"大脑"，界面、搜索、检测、日志等功能都在这里）
+│   ├── config.json          ← 📄 配置文件（自动生成，记录你的个性化设置）
 │   └── error_helper.py      ← 📄 错误处理工具（程序出错时弹出友好提示，告诉你怎么解决）
 │
 ├── installer/               ← 📂 安装程序制作（用来生成安装包）
 │   ├── setup_script.iss     ← 📄 安装脚本（告诉安装工具怎么打包成安装程序）
-│   └── SeewoTeacherHelper_Setup.exe  ← 📦 安装包（双击它就能把程序装到电脑上）
+│   ├── check_empty_folder.iss ← 📄 安装辅助脚本（检查安装目录是否为空）
+│   └── SeewoTeacherHelper_Setup.exe  ← 📦 安装包（双击安装到电脑上）
 │
 ├── tests/                   ← 📂 测试文件（用来测试程序好不好用）
 │   ├── test_app.py          ← 📄 测试用模拟程序（假装是一个外置程序，用来测试检测功能）
@@ -126,14 +139,11 @@ SeewoTeacherHelper/          ← 项目根目录（整个项目的家）
 ├── dist/                    ← 📂 打包好的程序（编译后的成品）
 │   └── SeewoTeacherHelper.exe  ← 📦 单文件程序（下载这个就能直接运行，不用安装Python）
 │
-├── build/                   ← 📂 打包中间文件（打包时自动生成的临时文件，不用管它）
-│
 ├── .venv/                   ← 📂 Python虚拟环境（用来隔离项目依赖，避免和其他程序冲突）
 │
 ├── .gitignore               ← 📄 Git忽略规则（告诉Git哪些文件不需要上传到GitHub）
 ├── build_exe.py             ← 📄 打包脚本（运行它就能把源代码打包成exe文件）
 ├── requirements.txt         ← 📄 依赖清单（记录了这个项目用到了哪些Python库）
-├── SeewoTeacherHelper.spec  ← 📄 打包配置文件（PyInstaller打包时用的配置文件）
 └── README.md                ← 📄 本文件（项目介绍和使用说明）
 ```
 
@@ -143,6 +153,7 @@ SeewoTeacherHelper/          ← 项目根目录（整个项目的家）
 |------------|---------------------|
 | **直接使用程序** | `dist/SeewoTeacherHelper.exe` 或 `installer/SeewoTeacherHelper_Setup.exe` |
 | **修改程序代码** | `app/main.py`（主要功能）和 `app/error_helper.py`（错误提示） |
+| **更换程序图标** | `app/assets/` 文件夹中的 `app_icon.png` 和 `app_icon.ico` |
 | **重新打包成exe** | 运行 `build_exe.py` |
 | **制作安装包** | `installer/setup_script.iss` |
 | **测试功能** | `tests/` 文件夹里的内容 |
