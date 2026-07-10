@@ -226,6 +226,7 @@ DEFAULT_CONFIG = {
     "auto_startup": False,          # 开机自启动
     "start_mode": "tray",           # 启动模式: "tray"=折叠框, "window"=图形界面
     "monitor_ppt": True,            # 检测PPT程序运行（自动触发外置程序检测和重启）
+    "enable_system_check": True,    # 启用系统检测选项卡
     "window_width": 800,
     "window_height": 600,
     "external_apps": []
@@ -390,11 +391,12 @@ class CheckThread(QThread):
 # 系统检测线程
 # ============================================================
 class SystemCheckThread(QThread):
-    """检测电脑系统运行状态"""
+    """检测电脑系统运行状态（全面检测）"""
     finished = pyqtSignal(dict)  # 返回检测结果字典
 
-    def __init__(self):
+    def __init__(self, apps=None):
         super().__init__()
+        self.apps = apps or []
 
     def run(self):
         result = {}
@@ -404,8 +406,10 @@ class SystemCheckThread(QThread):
             import psutil
             cpu_percent = psutil.cpu_percent(interval=1)
             result["cpu"] = cpu_percent
+            # CPU 物理核心数 / 逻辑核心数
+            result["cpu_physical"] = psutil.cpu_count(logical=False)
+            result["cpu_logical"] = psutil.cpu_count(logical=True)
         except ImportError:
-            # 没有 psutil 时使用 wmic 兜底
             try:
                 output = subprocess.run(
                     ["wmic", "cpu", "get", "loadpercentage"],
@@ -477,7 +481,24 @@ class SystemCheckThread(QThread):
             except Exception:
                 result["disk_percent"] = None
 
-        # 4. 系统运行时间
+        # 4. 磁盘健康状态（检查磁盘错误）
+        try:
+            output = subprocess.run(
+                ["wmic", "diskdrive", "get", "Status", "/VALUE"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            disk_statuses = []
+            for line in output.stdout.splitlines():
+                if "Status" in line and "=" in line:
+                    status = line.split("=", 1)[1].strip()
+                    disk_statuses.append(status)
+            if disk_statuses:
+                result["disk_health"] = disk_statuses
+        except Exception:
+            pass
+
+        # 5. 系统运行时间
         try:
             import psutil
             boot_time = psutil.boot_time()
@@ -506,7 +527,7 @@ class SystemCheckThread(QThread):
             except Exception:
                 result["uptime"] = "未知"
 
-        # 5. 系统版本
+        # 6. 系统版本
         try:
             output = subprocess.run(
                 ["wmic", "OS", "get", "Caption,Version", "/VALUE"],
@@ -524,27 +545,132 @@ class SystemCheckThread(QThread):
         except Exception:
             result["os_version"] = "Windows"
 
-        # 6. 重要进程检测（常见教学相关进程）
-        important_processes = {
-            "powerpnt.exe": "Microsoft PowerPoint",
-            "wpp.exe": "WPS 演示",
-            "wps.exe": "WPS Office",
-            "SeewoTeacherHelper.exe": "Seewo Teacher Helper",
-        }
+        # 7. 系统错误事件日志（最近 24 小时内的错误和警告）
+        system_errors = []
         try:
-            tasklist = subprocess.run(
-                ["tasklist", "/NH", "/FO", "CSV"],
+            # 使用 wevtutil 查询系统日志中的错误事件（Level=2 错误, Level=3 警告）
+            output = subprocess.run(
+                ["wevtutil", "qe", "System", "/q:",
+                 "*[System[(Level=2 or Level=3) and TimeCreated[timediff(@SystemTime) <= 86400000]]]",
+                 "/c:20", "/f:text"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if output.returncode == 0 and output.stdout.strip():
+                # 解析事件日志输出，提取关键信息
+                current_entry = {}
+                for line in output.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("Level:"):
+                        level_text = line.split(":", 1)[1].strip()
+                        current_entry["level"] = level_text
+                    elif line.startswith("Date:"):
+                        current_entry["date"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Source:"):
+                        current_entry["source"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Event ID:"):
+                        current_entry["event_id"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Message:"):
+                        msg = line.split(":", 1)[1].strip()
+                        # 截断过长消息
+                        if len(msg) > 120:
+                            msg = msg[:120] + "..."
+                        current_entry["message"] = msg
+                    elif line == "" and current_entry:
+                        if "level" in current_entry and "message" in current_entry:
+                            system_errors.append(current_entry)
+                        current_entry = {}
+                if current_entry and "level" in current_entry and "message" in current_entry:
+                    system_errors.append(current_entry)
+        except Exception:
+            pass
+        result["system_errors"] = system_errors
+
+        # 8. 应用程序错误事件日志（最近 24 小时内的错误）
+        app_errors = []
+        try:
+            output = subprocess.run(
+                ["wevtutil", "qe", "Application", "/q:",
+                 "*[System[(Level=2) and TimeCreated[timediff(@SystemTime) <= 86400000]]]",
+                 "/c:20", "/f:text"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if output.returncode == 0 and output.stdout.strip():
+                current_entry = {}
+                for line in output.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("Level:"):
+                        level_text = line.split(":", 1)[1].strip()
+                        current_entry["level"] = level_text
+                    elif line.startswith("Date:"):
+                        current_entry["date"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Source:"):
+                        current_entry["source"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Event ID:"):
+                        current_entry["event_id"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Message:"):
+                        msg = line.split(":", 1)[1].strip()
+                        if len(msg) > 120:
+                            msg = msg[:120] + "..."
+                        current_entry["message"] = msg
+                    elif line == "" and current_entry:
+                        if "level" in current_entry and "message" in current_entry:
+                            app_errors.append(current_entry)
+                        current_entry = {}
+                if current_entry and "level" in current_entry and "message" in current_entry:
+                    app_errors.append(current_entry)
+        except Exception:
+            pass
+        result["app_errors"] = app_errors
+
+        # 9. 网络连通性检测
+        network_ok = False
+        try:
+            output = subprocess.run(
+                ["ping", "-n", "1", "-w", "3000", "8.8.8.8"],
                 capture_output=True, text=True, timeout=5,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-            stdout_lower = tasklist.stdout.lower()
-            running_procs = []
-            for exe_name, display_name in important_processes.items():
-                if f'"{exe_name}"' in stdout_lower or exe_name in stdout_lower:
-                    running_procs.append(display_name)
-            result["running_processes"] = running_procs
+            network_ok = output.returncode == 0
         except Exception:
-            result["running_processes"] = []
+            pass
+        result["network_ok"] = network_ok
+
+        # 10. Windows 更新状态
+        try:
+            output = subprocess.run(
+                ["wmic", "qfe", "get", "HotFixID,InstalledOn", "/VALUE"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            updates = []
+            current_hotfix = {}
+            for line in output.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("HotFixID"):
+                    current_hotfix["id"] = line.split("=", 1)[1].strip()
+                elif line.startswith("InstalledOn"):
+                    current_hotfix["date"] = line.split("=", 1)[1].strip()
+                elif line == "" and current_hotfix:
+                    if "id" in current_hotfix:
+                        updates.append(current_hotfix)
+                    current_hotfix = {}
+            if current_hotfix and "id" in current_hotfix:
+                updates.append(current_hotfix)
+            result["windows_updates"] = updates
+        except Exception:
+            pass
+
+        # 11. 检测用户添加的外置程序
+        running_procs = []
+        for app in self.apps:
+            try:
+                if app.exe_path and app.is_running():
+                    running_procs.append(app.name)
+            except Exception:
+                pass
+        result["running_processes"] = running_procs
 
         self.finished.emit(result)
 
@@ -794,6 +920,13 @@ class MainWindow(QMainWindow):
         if self.config.get("monitor_ppt", True):
             self.start_ppt_monitor()
 
+        # 根据设置显示/隐藏系统检测选项卡
+        if not self.config.get("enable_system_check", True):
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i) == "系统检测":
+                    self.tabs.setTabVisible(i, False)
+                    break
+
     # ==================== UI 构建 ====================
     def setup_ui(self):
         central = QWidget()
@@ -835,6 +968,10 @@ class MainWindow(QMainWindow):
         self.log_tab = QWidget()
         self.setup_log_tab()
         self.tabs.addTab(self.log_tab, "日志")
+
+        self.system_tab = QWidget()
+        self.setup_system_tab()
+        self.tabs.addTab(self.system_tab, "系统检测")
 
     # ==================== PPT 选项卡 ====================
     def setup_ppt_tab(self):
@@ -1256,6 +1393,24 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(group1)
 
+        # ----- 系统检测设置 -----
+        group_sys = QGroupBox("系统检测设置")
+        group_sys_layout = QVBoxLayout(group_sys)
+
+        self.enable_system_check_cb = QCheckBox("启用「系统检测」选项卡（检测 CPU、内存、磁盘等运行状态）")
+        self.enable_system_check_cb.setChecked(self.config.get("enable_system_check", True))
+        self.enable_system_check_cb.toggled.connect(self.on_enable_system_check_toggled)
+        group_sys_layout.addWidget(self.enable_system_check_cb)
+
+        sys_hint = QLabel(
+            "💡 关闭后，「系统检测」选项卡将隐藏，不会在界面中显示。"
+        )
+        sys_hint.setStyleSheet("color: #888; font-size: 11px; padding-left: 20px;")
+        sys_hint.setWordWrap(True)
+        group_sys_layout.addWidget(sys_hint)
+
+        layout.addWidget(group_sys)
+
         # ----- 关于 -----
         group3 = QGroupBox("关于")
         group3_layout = QVBoxLayout(group3)
@@ -1272,7 +1427,231 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-    # ==================== 日志选项卡 ====================
+    # ==================== 系统检测选项卡 ====================
+    def setup_system_tab(self):
+        layout = QVBoxLayout(self.system_tab)
+        layout.setSpacing(12)
+
+        header = QLabel("电脑运行状态检测")
+        header_font = QFont()
+        header_font.setPointSize(12)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        hint = QLabel(
+            "检测当前电脑的 CPU、内存、磁盘使用情况，以及系统运行时间和关键进程状态。"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(hint)
+
+        # 检测按钮
+        self.check_system_btn = QPushButton("开始检测")
+        btn_font = QFont()
+        btn_font.setPointSize(14)
+        btn_font.setBold(True)
+        self.check_system_btn.setFont(btn_font)
+        self.check_system_btn.setMinimumHeight(50)
+        self.check_system_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 12px;
+                font-size: 15px;
+            }
+            QPushButton:hover {
+                background-color: #219a52;
+            }
+            QPushButton:pressed {
+                background-color: #1e8449;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+            }
+        """)
+        self.check_system_btn.clicked.connect(self.on_check_system)
+        layout.addWidget(self.check_system_btn)
+
+        # 检测结果展示区域
+        self.system_result_widget = QTextEdit()
+        self.system_result_widget.setReadOnly(True)
+        self.system_result_widget.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                padding: 12px;
+                background-color: #fafafa;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 13px;
+                color: #2c3e50;
+            }
+        """)
+        self.system_result_widget.setMinimumHeight(250)
+        layout.addWidget(self.system_result_widget)
+
+        layout.addStretch()
+
+    def on_check_system(self):
+        """点击开始检测按钮"""
+        self.check_system_btn.setEnabled(False)
+        self.check_system_btn.setText("正在检测...")
+        self.system_result_widget.setText("正在收集系统信息，请稍候...\n")
+
+        self.system_check_thread = SystemCheckThread(apps=self.external_apps)
+        self.system_check_thread.finished.connect(self.on_system_check_finished)
+        self.system_check_thread.start()
+
+    def on_system_check_finished(self, result):
+        """系统检测完成，展示结果"""
+        self.check_system_btn.setEnabled(True)
+        self.check_system_btn.setText("重新检测")
+
+        lines = []
+        lines.append("=" * 50)
+        lines.append("  📊 系统全面检测报告")
+        lines.append("=" * 50)
+        lines.append("")
+
+        # ----- 系统基本信息 -----
+        lines.append("  ── 系统基本信息 ──")
+        os_ver = result.get("os_version", "Windows")
+        lines.append(f"  🖥  操作系统：{os_ver}")
+        uptime = result.get("uptime", "未知")
+        lines.append(f"  ⏱  运行时间：{uptime}")
+
+        cpu_physical = result.get("cpu_physical")
+        cpu_logical = result.get("cpu_logical")
+        if cpu_physical:
+            lines.append(f"  🔲  CPU 核心：{cpu_physical} 物理核 / {cpu_logical} 逻辑核")
+        lines.append("")
+
+        # ----- 硬件资源 -----
+        lines.append("  ── 硬件资源 ──")
+
+        # CPU
+        cpu = result.get("cpu")
+        if cpu is not None:
+            cpu_bar = self._make_progress_bar(cpu, 40)
+            lines.append(f"  🔲  CPU 使用率：{cpu}%  {cpu_bar}")
+        else:
+            lines.append(f"  🔲  CPU 使用率：获取失败")
+
+        # 内存
+        mem_percent = result.get("memory_percent")
+        if mem_percent is not None:
+            mem_bar = self._make_progress_bar(mem_percent, 40)
+            mem_used = result.get("memory_used", 0)
+            mem_total = result.get("memory_total", 0)
+            used_str = self._format_bytes(mem_used)
+            total_str = self._format_bytes(mem_total)
+            lines.append(f"  💾  内存使用率：{mem_percent}%  {mem_bar}")
+            lines.append(f"       已用：{used_str} / 总计：{total_str}")
+        else:
+            lines.append(f"  💾  内存使用率：获取失败")
+
+        # 磁盘
+        disk_percent = result.get("disk_percent")
+        if disk_percent is not None:
+            disk_bar = self._make_progress_bar(disk_percent, 40)
+            disk_free = result.get("disk_free", 0)
+            disk_total = result.get("disk_total", 0)
+            free_str = self._format_bytes(disk_free)
+            total_str = self._format_bytes(disk_total)
+            lines.append(f"  💿  C 盘使用率：{disk_percent}%  {disk_bar}")
+            lines.append(f"       剩余：{free_str} / 总计：{total_str}")
+        else:
+            lines.append(f"  💿  C 盘使用率：获取失败")
+
+        # 磁盘健康
+        disk_health = result.get("disk_health")
+        if disk_health:
+            all_ok = all(s.upper() == "OK" for s in disk_health)
+            if all_ok:
+                lines.append(f"  💽  磁盘健康：✅ 正常")
+            else:
+                bad = [s for s in disk_health if s.upper() != "OK"]
+                lines.append(f"  💽  磁盘健康：⚠️ 异常 ({', '.join(bad)})")
+        lines.append("")
+
+        # ----- 网络与更新 -----
+        lines.append("  ── 网络与更新 ──")
+        network_ok = result.get("network_ok")
+        if network_ok is True:
+            lines.append(f"  🌐  网络连接：✅ 正常")
+        elif network_ok is False:
+            lines.append(f"  🌐  网络连接：❌ 无法访问外网")
+        else:
+            lines.append(f"  🌐  网络连接：检测失败")
+
+        updates = result.get("windows_updates")
+        if updates is not None:
+            lines.append(f"  📦  已安装更新：{len(updates)} 个")
+        lines.append("")
+
+        # ----- 系统错误日志 -----
+        lines.append("  ── 系统错误日志（最近 24 小时）──")
+        system_errors = result.get("system_errors", [])
+        if system_errors:
+            lines.append(f"  ⚠️  发现 {len(system_errors)} 条系统错误/警告：")
+            for i, err in enumerate(system_errors, 1):
+                level = err.get("level", "未知")
+                source = err.get("source", "未知")
+                event_id = err.get("event_id", "")
+                msg = err.get("message", "")
+                lines.append(f"  [{i}] {level} | {source} (ID: {event_id})")
+                lines.append(f"       {msg}")
+        else:
+            lines.append(f"  ✅ 未发现系统错误日志（或无法读取）")
+        lines.append("")
+
+        # ----- 应用程序错误日志 -----
+        lines.append("  ── 应用程序错误日志（最近 24 小时）──")
+        app_errors = result.get("app_errors", [])
+        if app_errors:
+            lines.append(f"  ⚠️  发现 {len(app_errors)} 条应用程序错误：")
+            for i, err in enumerate(app_errors, 1):
+                source = err.get("source", "未知")
+                event_id = err.get("event_id", "")
+                msg = err.get("message", "")
+                lines.append(f"  [{i}] {source} (ID: {event_id})")
+                lines.append(f"       {msg}")
+        else:
+            lines.append(f"  ✅ 未发现应用程序错误日志（或无法读取）")
+        lines.append("")
+
+        # ----- 外置程序 -----
+        lines.append("  ── 外置程序状态 ──")
+        running_procs = result.get("running_processes", [])
+        if running_procs:
+            for proc in running_procs:
+                lines.append(f"  ✅ {proc}  — 运行中")
+        else:
+            lines.append(f"  ℹ️  没有正在运行的外置程序")
+        lines.append("")
+        lines.append("=" * 50)
+
+        self.system_result_widget.setText("\n".join(lines))
+
+    def _make_progress_bar(self, percent, length=30):
+        """生成文本进度条"""
+        filled = int(percent / 100 * length)
+        filled = max(0, min(filled, length))
+        bar = "█" * filled + "░" * (length - filled)
+        return bar
+
+    def _format_bytes(self, bytes_val):
+        """将字节数格式化为可读的 GB/MB 字符串"""
+        if not bytes_val:
+            return "未知"
+        gb = bytes_val / (1024 ** 3)
+        if gb >= 1:
+            return f"{gb:.1f} GB"
+        mb = bytes_val / (1024 ** 2)
+        return f"{mb:.0f} MB"
+
     def setup_log_tab(self):
         layout = QVBoxLayout(self.log_tab)
         layout.setSpacing(10)
@@ -1345,6 +1724,19 @@ class MainWindow(QMainWindow):
                 self.ppt_monitor.stop()
                 self.ppt_monitor.wait(2000)
 
+    def on_enable_system_check_toggled(self, enabled):
+        """系统检测选项卡开关"""
+        self.config["enable_system_check"] = enabled
+        save_config(self.config)
+        # 查找系统检测选项卡的索引
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "系统检测":
+                if enabled:
+                    self.tabs.setTabVisible(i, True)
+                else:
+                    self.tabs.setTabVisible(i, False)
+                break
+
     def update_config(self, key, value):
         self.config[key] = value
         save_config(self.config)
@@ -1388,6 +1780,10 @@ class MainWindow(QMainWindow):
             check_action = QAction("检测外置程序", self)
             check_action.triggered.connect(self.check_external_apps)
             tray_menu.addAction(check_action)
+
+            system_check_action = QAction("系统检测", self)
+            system_check_action.triggered.connect(self.on_check_system)
+            tray_menu.addAction(system_check_action)
 
             tray_menu.addSeparator()
 
